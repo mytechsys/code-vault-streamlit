@@ -1,4 +1,5 @@
 import io
+import mimetypes
 from importlib import import_module
 import os
 import re
@@ -19,6 +20,7 @@ except ImportError:
 
 DB_PATH = "app.db"
 SESSION_TIMEOUT_SECONDS = 15 * 60
+MAX_ZIP_IMPORT_BYTES = 500 * 1024 * 1024
 ACE_LANGUAGES = {
     "python": "python",
     "javascript": "javascript",
@@ -284,14 +286,73 @@ def delete_script_by_id(script_id):
 
 
 def save_uploaded_file(uploaded_file, uploaded_by):
+    return save_file_content(
+        uploaded_file.name,
+        uploaded_file.getvalue(),
+        uploaded_file.type,
+        uploaded_by,
+    )
+
+
+def save_file_content(filename, content, mime_type, uploaded_by):
     file_id = str(uuid.uuid4())
     conn = get_conn()
     conn.execute(
         "INSERT INTO stored_files (id, filename, content, mime_type, uploaded_by) VALUES (?, ?, ?, ?, ?)",
-        (file_id, uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type, uploaded_by),
+        (file_id, filename, content, mime_type, uploaded_by),
     )
     conn.commit()
     conn.close()
+    return file_id
+
+
+def import_stored_files_zip(uploaded_zip, uploaded_by):
+    try:
+        with zipfile.ZipFile(io.BytesIO(uploaded_zip.getvalue())) as archive:
+            members = [member for member in archive.infolist() if not member.is_dir()]
+            total_size = sum(member.file_size for member in members)
+            if total_size > MAX_ZIP_IMPORT_BYTES:
+                return 0, "The ZIP contents exceed the 500 MB import limit."
+
+            imported_rows = []
+            for member in members:
+                filename = member.filename.replace("\\", "/").rsplit("/", 1)[-1]
+                if not filename or filename in {".", ".."}:
+                    continue
+                content = archive.read(member)
+                mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                imported_rows.append(
+                    (str(uuid.uuid4()), filename, content, mime_type, uploaded_by)
+                )
+    except (OSError, RuntimeError, zipfile.BadZipFile):
+        return 0, "The selected file is not a valid ZIP archive."
+
+    if not imported_rows:
+        return 0, "The ZIP archive does not contain any files to import."
+
+    conn = get_conn()
+    conn.executemany(
+        "INSERT INTO stored_files (id, filename, content, mime_type, uploaded_by) VALUES (?, ?, ?, ?, ?)",
+        imported_rows,
+    )
+    conn.commit()
+    conn.close()
+    return len(imported_rows), None
+
+
+def export_stored_files_zip(files):
+    buffer = io.BytesIO()
+    used_names = set()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for stored_file in files:
+            file_data = get_stored_file(stored_file["id"])
+            filename = file_data["filename"].replace("\\", "/").rsplit("/", 1)[-1]
+            if filename in used_names:
+                filename = f"{stored_file['id'][:8]}_{filename}"
+            used_names.add(filename)
+            archive.writestr(filename, file_data["content"])
+    buffer.seek(0)
+    return buffer
 
 
 def list_stored_files(username=None):
@@ -423,23 +484,96 @@ def render_file_library(is_admin):
         st.success(f"Saved {len(uploaded_files)} file(s).")
         st.rerun()
 
+    if is_admin:
+        export_files = list_stored_files()
+        if export_files:
+            st.download_button(
+                "Download all files as ZIP",
+                data=export_stored_files_zip(export_files),
+                file_name="all_stored_files.zip",
+                mime="application/zip",
+                key="download_all_stored_files",
+            )
+
+        uploaded_zip = st.file_uploader(
+            "Import files from ZIP",
+            type=["zip"],
+            key="stored_files_zip_uploader",
+        )
+        if uploaded_zip and st.button("Import ZIP", key="import_stored_files_zip"):
+            imported_count, error = import_stored_files_zip(
+                uploaded_zip,
+                st.session_state.username,
+            )
+            if error:
+                st.error(error)
+            else:
+                st.success(f"Imported {imported_count} file(s).")
+                st.session_state.file_grid_version = st.session_state.get("file_grid_version", 0) + 1
+                st.rerun()
+
     files = list_stored_files(None if is_admin else st.session_state.username)
     if not files:
         st.info("No files stored yet.")
         return
+
+    grid_version = st.session_state.get("file_grid_version", 0)
+    grid_key = f"stored_file_grid_{'admin' if is_admin else 'user'}_{grid_version}"
+    grid_state = st.session_state.get(grid_key, {})
+    if isinstance(grid_state, dict):
+        selection_state = grid_state.get("selection", {})
+    else:
+        selection_state = getattr(grid_state, "selection", {})
+    if isinstance(selection_state, dict):
+        selected_rows = selection_state.get("rows", [])
+    else:
+        selected_rows = getattr(selection_state, "rows", [])
+
+    selected_file = files[selected_rows[0]] if selected_rows and selected_rows[0] < len(files) else None
+    if selected_file:
+        filename_column, actions_column = st.columns([8, 2], vertical_alignment="center")
+        with filename_column:
+            st.markdown(f"**{selected_file['filename']}**")
+        with actions_column:
+            action_columns = st.columns(2 if is_admin else 1, gap="small")
+            file_data = get_stored_file(selected_file["id"])
+            with action_columns[0]:
+                st.download_button(
+                    " ",
+                    data=file_data["content"],
+                    file_name=file_data["filename"],
+                    mime=file_data["mime_type"] or "application/octet-stream",
+                    key=f"download_stored_file_{selected_file['id']}",
+                    icon=":material/download:",
+                    help=f"Download {file_data['filename']}",
+                    type="tertiary",
+                )
+            if is_admin:
+                with action_columns[1]:
+                    if st.button(
+                        " ",
+                        key=f"delete_stored_file_{selected_file['id']}",
+                        icon=":material/delete:",
+                        help=f"Delete {selected_file['filename']}",
+                        type="tertiary",
+                    ):
+                        delete_stored_file(selected_file["id"])
+                        st.session_state.file_grid_version = grid_version + 1
+                        st.rerun()
+    else:
+        st.caption("Select a file row to show its actions.")
 
     grid_data = [
         {
             "Filename": stored_file["filename"],
             "Created by": stored_file["uploaded_by"],
             "Date": stored_file["created_at"],
-            "Actions": "↓  ×" if is_admin else "↓",
         }
         for stored_file in files
     ]
     grid = st.dataframe(
         grid_data,
-        key=f"stored_file_grid_{'admin' if is_admin else 'user'}",
+        key=grid_key,
         on_select="rerun",
         selection_mode="single-row",
         hide_index=True,
@@ -449,42 +583,8 @@ def render_file_library(is_admin):
             "Filename": st.column_config.TextColumn("Filename", width="large"),
             "Created by": st.column_config.TextColumn("Created by", width="medium"),
             "Date": st.column_config.TextColumn("Date", width="medium"),
-            "Actions": st.column_config.TextColumn("Actions", width="small"),
         },
     )
-
-    selected_rows = grid.selection.rows
-    if not selected_rows:
-        st.caption("Select a file to show its actions.")
-        return
-
-    stored_file = files[selected_rows[0]]
-    file_data = get_stored_file(stored_file["id"])
-    st.caption(f"Selected: {stored_file['filename']}")
-    with st.container(key="file-row-actions"):
-        action_columns = st.columns(2 if is_admin else 1, gap="small")
-        with action_columns[0]:
-            st.download_button(
-                " ",
-                data=file_data["content"],
-                file_name=file_data["filename"],
-                mime=file_data["mime_type"] or "application/octet-stream",
-                key=f"download_stored_file_{stored_file['id']}",
-                icon=":material/download:",
-                help=f"Download {file_data['filename']}",
-                type="tertiary",
-            )
-        if is_admin:
-            with action_columns[1]:
-                if st.button(
-                    " ",
-                    key=f"delete_stored_file_{stored_file['id']}",
-                    icon=":material/delete:",
-                    help=f"Delete {stored_file['filename']}",
-                    type="tertiary",
-                ):
-                    delete_stored_file(stored_file["id"])
-                    st.rerun()
 
 
 init_db()
