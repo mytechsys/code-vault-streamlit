@@ -1,15 +1,21 @@
 import io
+import base64
+import hashlib
+import hmac
 import mimetypes
 from importlib import import_module
 import os
 import re
 import smtplib
+import struct
 import sqlite3
+import secrets
 import time
 import uuid
 import zipfile
 from datetime import datetime
 from email.message import EmailMessage
+from urllib.parse import quote
 
 import streamlit as st
 
@@ -20,6 +26,7 @@ except ImportError:
 
 DB_PATH = "app.db"
 SESSION_TIMEOUT_SECONDS = 15 * 60
+TOTP_STEP_SECONDS = 30
 MAX_ZIP_IMPORT_BYTES = 500 * 1024 * 1024
 ACE_LANGUAGES = {
     "python": "python",
@@ -98,6 +105,8 @@ def init_db():
             role TEXT NOT NULL CHECK(role IN ('user','admin')),
             email TEXT,
             locked INTEGER NOT NULL DEFAULT 0,
+            mfa_secret TEXT,
+            mfa_enabled INTEGER NOT NULL DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
         """
@@ -105,6 +114,10 @@ def init_db():
     user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
     if "locked" not in user_columns:
         conn.execute("ALTER TABLE users ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
+    if "mfa_secret" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN mfa_secret TEXT")
+    if "mfa_enabled" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS scripts (
@@ -167,13 +180,64 @@ def hash_password(password):
 def login_user(username, password):
     conn = get_conn()
     row = conn.execute(
-        "SELECT username, role, email FROM users WHERE username = ? AND password = ? AND locked = 0",
+        "SELECT username, role, email, mfa_secret, mfa_enabled FROM users WHERE username = ? AND password = ? AND locked = 0",
         (username, hash_password(password)),
     ).fetchone()
     conn.close()
     if row:
-        return {"username": row["username"], "role": row["role"], "email": row["email"]}
+        return {
+            "username": row["username"],
+            "role": row["role"],
+            "email": row["email"],
+            "mfa_secret": row["mfa_secret"],
+            "mfa_enabled": bool(row["mfa_enabled"]),
+        }
     return None
+
+
+def get_user_auth_settings(username):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT username, role, email, mfa_secret, mfa_enabled, locked FROM users WHERE username = ?",
+        (username,),
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def generate_totp_secret():
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+
+def totp_code(secret, timestamp=None):
+    padded_secret = secret + "=" * (-len(secret) % 8)
+    key = base64.b32decode(padded_secret, casefold=True)
+    counter = int((time.time() if timestamp is None else timestamp) // TOTP_STEP_SECONDS)
+    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    code = (int.from_bytes(digest[offset:offset + 4], "big") & 0x7FFFFFFF) % 1_000_000
+    return f"{code:06d}"
+
+
+def verify_totp(secret, token, timestamp=None):
+    token = "".join((token or "").split())
+    if not secret or len(token) != 6 or not token.isdigit():
+        return False
+    current_time = time.time() if timestamp is None else timestamp
+    return any(
+        hmac.compare_digest(totp_code(secret, current_time + offset * TOTP_STEP_SECONDS), token)
+        for offset in (-1, 0, 1)
+    )
+
+
+def set_user_mfa(username, secret, enabled):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE users SET mfa_secret = ?, mfa_enabled = ? WHERE username = ?",
+        (secret, int(enabled), username),
+    )
+    conn.commit()
+    conn.close()
 
 
 def is_user_locked(username):
@@ -721,6 +785,39 @@ def render_user_account_manager():
             st.session_state.admin_account_grid_version = grid_version + 1
             st.rerun()
 
+    st.subheader(f"Reset password for {account['username']}")
+    admin_auth = get_user_auth_settings(st.session_state.username)
+    with st.form("admin_reset_user_password_form"):
+        admin_password = st.text_input("Your admin password", type="password")
+        admin_mfa_code = None
+        if admin_auth["mfa_enabled"]:
+            admin_mfa_code = st.text_input("Your authenticator code", max_chars=8)
+        new_password = st.text_input("New user password", type="password")
+        confirm_password = st.text_input("Confirm new user password", type="password")
+        reset_password = st.form_submit_button("Reset user password")
+
+    if reset_password:
+        verified_admin = login_user(st.session_state.username, admin_password)
+        if not verified_admin or verified_admin["role"] != "admin":
+            st.error("Your admin password is incorrect.")
+        elif admin_auth["mfa_enabled"] and not verify_totp(
+            admin_auth["mfa_secret"], admin_mfa_code
+        ):
+            st.error("Your authenticator code is incorrect.")
+        elif len(new_password) < 8:
+            st.error("The new password must be at least 8 characters.")
+        elif new_password != confirm_password:
+            st.error("The new passwords do not match.")
+        else:
+            conn = get_conn()
+            conn.execute(
+                "UPDATE users SET password = ? WHERE username = ? AND role = 'user'",
+                (hash_password(new_password), account["username"]),
+            )
+            conn.commit()
+            conn.close()
+            st.success(f"Password updated for {account['username']}.")
+
 
 init_db()
 
@@ -764,18 +861,26 @@ def session_timeout_guard():
 def login_screen():
     st.markdown("### Code Vault")
     st.caption("Sign in to your account")
+    username = st.text_input("Username", key="login_username")
+    auth_account = get_user_auth_settings(username.strip()) if username.strip() else None
     with st.form("login_form"):
-        username = st.text_input("Username")
         password = st.text_input("Password", type="password")
+        mfa_code = None
+        if auth_account and auth_account["mfa_enabled"]:
+            mfa_code = st.text_input("Authenticator code", max_chars=8)
         submitted = st.form_submit_button("Login", use_container_width=True)
         if submitted:
             user = login_user(username, password)
             if user:
-                st.session_state.logged_in = True
-                st.session_state.role = user["role"]
-                st.session_state.username = user["username"]
-                st.session_state.last_activity_at = time.time()
-                st.rerun()
+                if user["mfa_enabled"] and not verify_totp(user["mfa_secret"], mfa_code):
+                    st.error("Enter a valid authenticator code.")
+                else:
+                    st.session_state.logged_in = True
+                    st.session_state.role = user["role"]
+                    st.session_state.username = user["username"]
+                    st.session_state.last_activity_at = time.time()
+                    st.session_state.mfa_setup_prompt = not user["mfa_enabled"]
+                    st.rerun()
             else:
                 st.error("Invalid username or password.")
 
@@ -825,9 +930,13 @@ def reset_password_screen():
 
 def change_password_screen():
     st.markdown("### Change password")
+    username = st.text_input("Username", key="change_password_username")
+    auth_account = get_user_auth_settings(username.strip()) if username.strip() else None
     with st.form("change_password_form"):
-        username = st.text_input("Username")
         current_password = st.text_input("Current password", type="password")
+        mfa_code = None
+        if auth_account and auth_account["mfa_enabled"]:
+            mfa_code = st.text_input("Authenticator code", max_chars=8)
         new_password = st.text_input("New password", type="password")
         confirm_password = st.text_input("Confirm new password", type="password")
         submitted = st.form_submit_button("Change password", use_container_width=True)
@@ -838,6 +947,10 @@ def change_password_screen():
             st.warning("The new passwords do not match.")
         elif not login_user(username, current_password):
             st.error("Username or current password is incorrect.")
+        elif auth_account and auth_account["mfa_enabled"] and not verify_totp(
+            auth_account["mfa_secret"], mfa_code
+        ):
+            st.error("Enter a valid authenticator code.")
         else:
             conn = get_conn()
             conn.execute(
@@ -849,15 +962,79 @@ def change_password_screen():
             st.success("Password changed successfully.")
 
 
+def render_mfa_settings(username):
+    account = get_user_auth_settings(username)
+    st.markdown("#### Multi-factor authentication")
+    if account["mfa_enabled"]:
+        st.success("Authenticator app MFA is enabled.")
+        with st.form("disable_mfa_form"):
+            current_password = st.text_input("Current password to disable MFA", type="password")
+            code = st.text_input("Authenticator code", max_chars=8)
+            submitted = st.form_submit_button("Turn off MFA")
+        if submitted:
+            user = login_user(username, current_password)
+            if not user:
+                st.error("Current password is incorrect.")
+            elif not verify_totp(account["mfa_secret"], code):
+                st.error("Enter a valid authenticator code.")
+            else:
+                set_user_mfa(username, None, False)
+                st.success("MFA is now turned off.")
+                st.rerun()
+        return
+
+    secret = account["mfa_secret"]
+    if not secret:
+        if st.button("Set up authenticator app"):
+            set_user_mfa(username, generate_totp_secret(), False)
+            st.rerun()
+        return
+
+    account_label = quote(f"Code Vault:{username}")
+    issuer = quote("Code Vault")
+    provisioning_uri = (
+        f"otpauth://totp/{account_label}?secret={secret}&issuer={issuer}"
+        "&algorithm=SHA1&digits=6&period=30"
+    )
+    st.caption("Add this account to Google Authenticator or another TOTP app.")
+    st.code(provisioning_uri, language="text")
+    st.caption("If your authenticator asks for a manual key, enter this secret:")
+    st.code(secret, language="text")
+    if st.button("Generate a new setup secret", key="regenerate_mfa_secret"):
+        set_user_mfa(username, generate_totp_secret(), False)
+        st.rerun()
+
+    with st.form("enable_mfa_form"):
+        code = st.text_input("One-time code from your authenticator", max_chars=8)
+        submitted = st.form_submit_button("Verify and enable MFA")
+    if submitted:
+        if verify_totp(secret, code):
+            set_user_mfa(username, secret, True)
+            st.success("MFA is enabled.")
+            st.rerun()
+        else:
+            st.error("That code is not valid. Check the authenticator time and try again.")
+
+
 def render_profile():
-    current_password = st.text_input("Current password", type="password")
-    if st.button("Load Profile"):
+    username = st.session_state.username
+    auth_account = get_user_auth_settings(username)
+    with st.form("load_profile_form"):
+        current_password = st.text_input("Current password", type="password")
+        mfa_code = None
+        if auth_account["mfa_enabled"]:
+            mfa_code = st.text_input("Authenticator code", max_chars=8)
+        load_profile = st.form_submit_button("Load Profile")
+    if load_profile:
         user = login_user(st.session_state.username, current_password)
-        if user:
+        if user and (
+            not auth_account["mfa_enabled"]
+            or verify_totp(auth_account["mfa_secret"], mfa_code)
+        ):
             st.session_state.profile_loaded = True
             st.session_state.current_email = user["email"] or ""
         else:
-            st.warning("Incorrect current password.")
+            st.warning("Current password or authenticator code is incorrect.")
 
     if st.session_state.get("profile_loaded", False):
         new_username = st.text_input("New Username", value=st.session_state.username)
@@ -876,6 +1053,7 @@ def render_profile():
                 st.rerun()
             else:
                 st.error(msg)
+        render_mfa_settings(username)
 
 
 if not st.session_state.logged_in:
@@ -909,6 +1087,19 @@ else:
                 st.rerun()
             if st.button("Logout", use_container_width=True):
                 clear_login_session()
+                st.rerun()
+
+    if st.session_state.get("mfa_setup_prompt", False):
+        st.info("MFA is not enabled for this account. Set it up from Profile settings for stronger sign-in security.")
+        setup_column, defer_column, _ = st.columns([1, 1, 4])
+        with setup_column:
+            if st.button("Set up MFA", key="open_mfa_setup"):
+                st.session_state.profile_view = True
+                st.session_state.mfa_setup_prompt = False
+                st.rerun()
+        with defer_column:
+            if st.button("Later", key="defer_mfa_setup"):
+                st.session_state.mfa_setup_prompt = False
                 st.rerun()
 
     if st.session_state.get("profile_view", False):
