@@ -967,8 +967,7 @@ def change_password_screen():
             st.success("Password changed successfully.")
 
 
-@st.dialog("Set up authenticator app", width="large")
-def show_mfa_setup_dialog(username):
+def show_mfa_setup_content(username):
     account = get_user_auth_settings(username)
     secret = account["mfa_secret"]
     if not secret:
@@ -982,7 +981,7 @@ def show_mfa_setup_dialog(username):
     )
     st.caption("Scan this QR code using Google Authenticator or another TOTP app.")
     if qrcode:
-        qr_image = qrcode.make(provisioning_uri)
+        qr_image = qrcode.make(provisioning_uri, box_size=4, border=2)
         qr_buffer = io.BytesIO()
         qr_image.save(qr_buffer, format="PNG")
         st.image(qr_buffer.getvalue(), width="content", output_format="PNG")
@@ -997,28 +996,49 @@ def show_mfa_setup_dialog(username):
         st.rerun()
 
     with st.form("enable_mfa_form"):
-        code = st.text_input("One-time code from your authenticator", max_chars=8)
-        submitted = st.form_submit_button("Verify and enable MFA")
+        code_column, verify_column = st.columns([2, 1], vertical_alignment="bottom")
+        with code_column:
+            code = st.text_input("One-time code from your authenticator", max_chars=8)
+        with verify_column:
+            submitted = st.form_submit_button("Verify and enable", use_container_width=True)
     if submitted:
         if verify_totp(secret, code):
             set_user_mfa(username, secret, True)
             st.session_state.mfa_setup_prompt = False
+            st.session_state.profile_mfa_setup = False
             st.success("MFA is enabled.")
             st.rerun()
         else:
             st.error("That code is not valid. Check the authenticator time and try again.")
 
 
+@st.dialog("Set up authenticator app", width="large")
+def show_mfa_setup_dialog(username):
+    show_mfa_setup_content(username)
+
+
 def render_mfa_settings(username):
     account = get_user_auth_settings(username)
     st.markdown("#### Multi-factor authentication")
+    if st.session_state.get("profile_mfa_setup", False):
+        show_mfa_setup_content(username)
+        return
+
     if account["mfa_enabled"]:
         st.success("Authenticator app MFA is enabled.")
         with st.form("manage_mfa_form"):
-            action = st.selectbox("MFA settings", ["Turn off MFA", "Replace authenticator"])
-            current_password = st.text_input("Current password", type="password")
-            code = st.text_input("Current authenticator code", max_chars=8)
-            submitted = st.form_submit_button("Continue")
+            action_column, password_column, code_column, continue_column = st.columns(
+                [1.5, 2, 1.5, 1],
+                vertical_alignment="bottom",
+            )
+            with action_column:
+                action = st.selectbox("MFA settings", ["Turn off MFA", "Replace authenticator"])
+            with password_column:
+                current_password = st.text_input("Current password", type="password")
+            with code_column:
+                code = st.text_input("Current authenticator code", max_chars=8)
+            with continue_column:
+                submitted = st.form_submit_button("Continue", use_container_width=True)
         if submitted:
             user = login_user(username, current_password)
             if not user:
@@ -1031,23 +1051,35 @@ def render_mfa_settings(username):
                 st.rerun()
             else:
                 set_user_mfa(username, generate_totp_secret(), False)
-                show_mfa_setup_dialog(username)
+                st.session_state.profile_mfa_setup = True
+                st.rerun()
         return
 
     button_label = "Continue MFA setup" if account["mfa_secret"] else "Set up authenticator app"
     if st.button(button_label, key="open_mfa_setup"):
-        show_mfa_setup_dialog(username)
+        if not account["mfa_secret"]:
+            set_user_mfa(username, generate_totp_secret(), False)
+        st.session_state.profile_mfa_setup = True
+        st.rerun()
 
 
+@st.dialog("Profile settings", width="large")
 def render_profile():
     username = st.session_state.username
     auth_account = get_user_auth_settings(username)
     with st.form("load_profile_form"):
-        current_password = st.text_input("Current password", type="password")
+        password_column, code_column, verify_column = st.columns(
+            [2, 1, 1],
+            vertical_alignment="bottom",
+        )
+        with password_column:
+            current_password = st.text_input("Current password", type="password")
         mfa_code = None
-        if auth_account["mfa_enabled"]:
-            mfa_code = st.text_input("Authenticator code", max_chars=8)
-        load_profile = st.form_submit_button("Load Profile")
+        with code_column:
+            if auth_account["mfa_enabled"]:
+                mfa_code = st.text_input("Authenticator code", max_chars=8)
+        with verify_column:
+            load_profile = st.form_submit_button("Verify", use_container_width=True)
     if load_profile:
         user = login_user(st.session_state.username, current_password)
         if user and (
@@ -1060,10 +1092,28 @@ def render_profile():
             st.warning("Current password or authenticator code is incorrect.")
 
     if st.session_state.get("profile_loaded", False):
-        new_username = st.text_input("New Username", value=st.session_state.username)
-        new_email = st.text_input("Email", value=st.session_state.get("current_email", ""))
-        new_password = st.text_input("New Password", type="password")
-        if st.button("Update Profile"):
+        with st.form("update_profile_form"):
+            username_column, email_column, password_column, update_column = st.columns(
+                [2, 2, 2, 1],
+                vertical_alignment="bottom",
+            )
+            with username_column:
+                new_username = st.text_input(
+                    "Username",
+                    value=st.session_state.username,
+                    key=f"profile_username_{username}",
+                )
+            with email_column:
+                new_email = st.text_input(
+                    "Email",
+                    value=st.session_state.get("current_email", ""),
+                    key=f"profile_email_{username}",
+                )
+            with password_column:
+                new_password = st.text_input("New password", type="password")
+            with update_column:
+                update_profile = st.form_submit_button("Update", use_container_width=True)
+        if update_profile:
             ok, msg = update_user_profile(
                 st.session_state.username,
                 new_username.strip(),
@@ -1106,8 +1156,7 @@ else:
         with st.popover("Account", icon=":material/account_circle:", help="Profile and logout", use_container_width=True):
             st.caption(st.session_state.username)
             if st.button("Profile", use_container_width=True):
-                st.session_state.profile_view = True
-                st.rerun()
+                render_profile()
             if st.button("Logout", use_container_width=True):
                 clear_login_session()
                 st.rerun()
@@ -1124,13 +1173,7 @@ else:
                 st.session_state.mfa_setup_prompt = False
                 st.rerun()
 
-    if st.session_state.get("profile_view", False):
-        st.subheader("Profile")
-        if st.button("Back to workspace"):
-            st.session_state.profile_view = False
-            st.rerun()
-        render_profile()
-    elif st.session_state.role == "user":
+    if st.session_state.role == "user":
         user_tab1, user_tab2, user_tab3 = st.tabs(["Paste Code", "My Scripts", "Files"])
 
         with user_tab1:
