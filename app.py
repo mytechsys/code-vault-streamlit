@@ -12,6 +12,75 @@ import streamlit as st
 
 DB_PATH = "app.db"
 
+CUSTOM_CSS = """
+<style>
+    :root {
+        --bg: #f5f9ff;
+        --panel: #ffffff;
+        --primary: #1f6feb;
+        --primary-soft: #eaf3ff;
+        --border: #dfe8f5;
+        --text: #1b2430;
+        --muted: #55657a;
+    }
+    .stApp {
+        background: var(--bg);
+        color: var(--text);
+    }
+    .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 1.5rem;
+        max-width: 1200px;
+    }
+    div[data-testid="stSidebar"] {
+        background: #ffffff;
+        border-right: 1px solid var(--border);
+    }
+    .stTitle, .stHeader, .stSubheader {
+        letter-spacing: 0.1px;
+    }
+    h1 {
+        font-size: 1.8rem !important;
+        margin-bottom: 0.5rem !important;
+    }
+    h2 {
+        font-size: 1.3rem !important;
+        margin-bottom: 0.3rem !important;
+    }
+    h3 {
+        font-size: 1.05rem !important;
+    }
+    .stTextInput > div > div > input,
+    .stTextArea > div > div > textarea,
+    .stSelectbox > div > div,
+    .stButton > button {
+        border-radius: 8px;
+    }
+    .stButton > button {
+        background: var(--primary);
+        color: white;
+        border: none;
+        padding: 0.45rem 0.9rem;
+        font-weight: 600;
+    }
+    .stButton > button:hover {
+        background: #1557c0;
+    }
+    .small-note {
+        color: var(--muted);
+        font-size: 0.8rem;
+    }
+    .info-card {
+        background: var(--primary-soft);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0.8rem 1rem;
+    }
+</style>
+"""
+
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
@@ -286,14 +355,7 @@ def render_code_preview(content, script_type):
     if script_type in ["python", "javascript", "sql", "bash", "json", "c_cpp", "text"]:
         st.code(content, language=script_type)
     elif script_type == "html":
-        html = f"""
-        <div style="padding:20px; border-radius:10px; background:#f8f9fa; border:1px solid #ddd;">
-            {content}
-        </div>
-        """
-        st.markdown(html, unsafe_allow_html=True)
-    elif script_type == "css":
-        st.code(content, language="css")
+        st.code(content, language="html")
     else:
         st.code(content, language="text")
 
@@ -308,11 +370,10 @@ if "role" not in st.session_state:
 if "username" not in st.session_state:
     st.session_state.username = None
 
-raw_code = ""
-
 
 def login_screen():
-    st.title("Code Vault Login")
+    st.title("Code Vault")
+    st.caption("Simple code storage for users and admins")
     with st.form("login_form"):
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
@@ -327,11 +388,13 @@ def login_screen():
             else:
                 st.error("Invalid username or password.")
 
+    st.markdown("<div class='info-card'><span class='small-note'>Default accounts: admin/admin and user/user</span></div>", unsafe_allow_html=True)
+
     st.markdown("---")
     st.subheader("Forgot Password")
     with st.form("forgot_password"):
-        fp_username = st.text_input("Username for password reset", key="fp_username")
-        fp_email = st.text_input("Email associated with account", key="fp_email")
+        fp_username = st.text_input("Username")
+        fp_email = st.text_input("Email")
         reset_clicked = st.form_submit_button("Send Reset Email")
         if reset_clicked:
             conn = get_conn()
@@ -342,13 +405,10 @@ def login_screen():
             conn.close()
             if row:
                 token = create_reset_token(fp_username)
-                ok, message = send_password_reset_email(fp_email, fp_username, token)
+                _, message = send_password_reset_email(fp_email, fp_username, token)
                 st.info(message)
             else:
                 st.warning("No account matches that username and email.")
-
-    st.markdown("---")
-    st.caption("Default accounts: admin/admin and user/user")
 
 
 def reset_password_screen():
@@ -366,7 +426,7 @@ def reset_password_screen():
             conn.commit()
             conn.close()
             clear_reset_token(username, token)
-            st.success("Password reset successfully. You can now log in.")
+            st.success("Password reset successfully.")
         else:
             st.error("Invalid reset token.")
 
@@ -378,7 +438,8 @@ if not st.session_state.logged_in:
     with tab_reset:
         reset_password_screen()
 else:
-    st.title(f"Welcome, {st.session_state.username} ({st.session_state.role})")
+    st.title(f"Welcome, {st.session_state.username}")
+    st.caption(f"Role: {st.session_state.role}")
     if st.button("Logout"):
         st.session_state.logged_in = False
         st.session_state.role = None
@@ -389,47 +450,42 @@ else:
         user_tab1, user_tab2, user_tab3 = st.tabs(["Paste Code", "My Files", "Profile"])
 
         with user_tab1:
-            st.subheader("Upload or Paste Code")
             with st.form("save_script_form"):
-                filename = st.text_input("Filename", placeholder="example.py")
-                raw_code = st.text_area("Paste code here", height=350)
-                script_type = st.selectbox(
-                    "Script Type",
-                    ["python", "javascript", "html", "css", "sql", "bash", "json", "c_cpp", "text"],
-                    index=0,
-                )
+                col_a, col_b = st.columns([2, 1])
+                with col_a:
+                    filename = st.text_input("Filename", placeholder="example.py")
+                with col_b:
+                    script_type = st.selectbox(
+                        "Type",
+                        ["python", "javascript", "html", "css", "sql", "bash", "json", "c_cpp", "text"],
+                        index=0,
+                    )
+                raw_code = st.text_area("Code", height=260)
+                detected = detect_script_type(raw_code) if raw_code.strip() else "text"
+                st.caption(f"Auto-detected type: {script_type_label(detected)}")
+
                 submitted = st.form_submit_button("Save Code")
                 if submitted:
                     if not filename.strip() or not raw_code.strip():
                         st.warning("Filename and code are required.")
                     else:
-                        detected = detect_script_type(raw_code)
                         chosen_type = script_type if script_type != "text" else detected
                         save_script(filename.strip(), raw_code.strip(), chosen_type, st.session_state.username)
-                        st.success(f"Saved code as '{filename.strip()}' ({script_type_label(chosen_type)})")
+                        st.success(f"Saved: {filename.strip()} ({script_type_label(chosen_type)})")
                         st.rerun()
 
-            st.markdown("---")
-            st.subheader("Preview")
-            if raw_code.strip():
-                preview_type = detect_script_type(raw_code)
-                st.markdown(f"Detected Type: **{script_type_label(preview_type)}**")
-                render_code_preview(raw_code, preview_type)
-
         with user_tab2:
-            st.subheader("My Saved Scripts")
             rows = list_scripts_for_user(st.session_state.username)
             if not rows:
-                st.info("No scripts saved yet.")
+                st.info("No saved scripts.")
             else:
                 for row in rows:
-                    with st.expander(f"{row['filename']} ({script_type_label(row['script_type'])}) - {row['id'][:8]}"):
+                    with st.expander(f"{row['filename']} • {script_type_label(row['script_type'])}"):
                         render_code_preview(row["content"], row["script_type"])
                         st.caption(f"Created: {row['created_at']}")
 
         with user_tab3:
-            st.subheader("Change Username / Password / Email")
-            current_password = st.text_input("Current password", type="password", key="profile_current_password")
+            current_password = st.text_input("Current password", type="password")
             if st.button("Load Profile"):
                 user = login_user(st.session_state.username, current_password)
                 if user:
@@ -452,44 +508,44 @@ else:
                         st.error(msg)
 
     elif st.session_state.role == "admin":
-        admin_tab1, admin_tab2, admin_tab3 = st.tabs(["Search & Manage Codes", "Export ZIP", "Profile"])
+        admin_tab1, admin_tab2, admin_tab3 = st.tabs(["Codes", "Export ZIP", "Profile"])
 
         with admin_tab1:
-            st.subheader("Admin - Search and Update Scripts")
-            search_term = st.text_input("Search by filename or script type", placeholder="e.g. app.py or python")
+            search_term = st.text_input("Search by filename or type", placeholder="python, app.py")
             rows = list_all_scripts()
             if search_term:
                 rows = [r for r in rows if search_term.lower() in (r["filename"] + " " + r["script_type"]).lower()]
+
             if not rows:
                 st.info("No scripts found.")
             else:
-                ids = [r["id"] for r in rows]
+                IDs = [r["id"] for r in rows]
                 selected_id = st.selectbox(
-                    "Select a script",
-                    ids,
-                    format_func=lambda x: f"{get_script_by_id(x)['filename']} ({script_type_label(get_script_by_id(x)['script_type'])})",
+                    "Select script",
+                    IDs,
+                    format_func=lambda x: f"{get_script_by_id(x)['filename']} • {script_type_label(get_script_by_id(x)['script_type'])}",
                 )
                 script = get_script_by_id(selected_id)
                 if script:
                     with st.form("admin_update_form"):
-                        filename = st.text_input("Filename", value=script["filename"])
-                        script_type = st.selectbox(
-                            "Script Type",
-                            ["python", "javascript", "html", "css", "sql", "bash", "json", "c_cpp", "text"],
-                            index=["python", "javascript", "html", "css", "sql", "bash", "json", "c_cpp", "text"].index(script["script_type"]) if script["script_type"] in ["python", "javascript", "html", "css", "sql", "bash", "json", "c_cpp", "text"] else 8,
-                        )
-                        content = st.text_area("Code", value=script["content"], height=400)
-                        submitted = st.form_submit_button("Update Code")
-                        if submitted:
-                            update_script_by_id(selected_id, filename, content, script_type)
-                            st.success("Script updated successfully.")
-                            st.rerun()
+                        c1, c2 = st.columns([2, 1])
+                        with c1:
+                            filename = st.text_input("Filename", value=script["filename"])
+                        with c2:
+                            script_type = st.selectbox(
+                                "Type",
+                                ["python", "javascript", "html", "css", "sql", "bash", "json", "c_cpp", "text"],
+                                index=["python", "javascript", "html", "css", "sql", "bash", "json", "c_cpp", "text"].index(script["script_type"]) if script["script_type"] in ["python", "javascript", "html", "css", "sql", "bash", "json", "c_cpp", "text"] else 8,
+                            )
 
-                    st.markdown("---")
-                    st.subheader("Preview")
-                    preview_type = detect_script_type(content)
-                    st.markdown(f"Detected Type: **{script_type_label(preview_type)}**")
-                    render_code_preview(content, preview_type)
+                        content = st.text_area("Code", value=script["content"], height=280)
+                        detected = detect_script_type(content) if content.strip() else "text"
+                        st.caption(f"Auto-detected type: {script_type_label(detected)}")
+
+                        if st.form_submit_button("Update Code"):
+                            update_script_by_id(selected_id, filename, content, script_type)
+                            st.success("Code updated.")
+                            st.rerun()
 
                     if st.button("Delete Script"):
                         delete_script_by_id(selected_id)
@@ -497,10 +553,9 @@ else:
                         st.rerun()
 
         with admin_tab2:
-            st.subheader("Export All Scripts as ZIP")
             rows = list_all_scripts()
             if not rows:
-                st.info("No scripts to export.")
+                st.info("No scripts available for export.")
             else:
                 zip_buffer = export_scripts_zip(rows)
                 st.download_button(
@@ -511,12 +566,18 @@ else:
                 )
 
         with admin_tab3:
-            st.subheader("Change Username / Password / Email")
-            current_password = st.text_input("Current password", type="password", key="admin_current_password")
-            user = login_user(st.session_state.username, current_password)
-            if user:
+            current_password = st.text_input("Current password", type="password")
+            if st.button("Load Profile"):
+                user = login_user(st.session_state.username, current_password)
+                if user:
+                    st.session_state.profile_loaded = True
+                    st.session_state.current_email = user["email"] or ""
+                else:
+                    st.warning("Incorrect current password.")
+
+            if st.session_state.get("profile_loaded", False):
                 new_username = st.text_input("New Username", value=st.session_state.username)
-                new_email = st.text_input("Email", value=user["email"] or "")
+                new_email = st.text_input("Email", value=st.session_state.get("current_email", ""))
                 new_password = st.text_input("New Password", type="password")
                 if st.button("Update Profile"):
                     ok, msg = update_user_profile(st.session_state.username, new_username.strip(), new_password.strip() or None, new_email.strip() or None)
@@ -526,9 +587,7 @@ else:
                         st.rerun()
                     else:
                         st.error(msg)
-            else:
-                st.warning("Current password is required before changing profile information.")
 
 
 st.sidebar.title("Code Vault")
-st.sidebar.caption("Role-based code management app")
+st.sidebar.caption("Role-based code management")
