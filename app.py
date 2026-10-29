@@ -15,25 +15,27 @@ DB_PATH = "app.db"
 CUSTOM_CSS = """
 <style>
     :root {
-        --bg: #f5f9ff;
+        --bg: #ffffff;
         --panel: #ffffff;
+        --panel-soft: #f4f9ff;
         --primary: #1f6feb;
         --primary-soft: #eaf3ff;
         --border: #dfe8f5;
         --text: #1b2430;
         --muted: #55657a;
+        --field-bg: #ffffff;
     }
     .stApp {
         background: var(--bg);
         color: var(--text);
     }
     .block-container {
-        padding-top: 1.5rem;
-        padding-bottom: 1.5rem;
+        padding-top: 1.4rem;
+        padding-bottom: 1.4rem;
         max-width: 1200px;
     }
     div[data-testid="stSidebar"] {
-        background: #ffffff;
+        background: var(--panel-soft);
         border-right: 1px solid var(--border);
     }
     .stTitle, .stHeader, .stSubheader {
@@ -53,8 +55,30 @@ CUSTOM_CSS = """
     .stTextInput > div > div > input,
     .stTextArea > div > div > textarea,
     .stSelectbox > div > div,
-    .stButton > button {
-        border-radius: 8px;
+    .stNumberInput > div > div > input,
+    .stDateInput > div > div > input,
+    .stButton > button,
+    select,
+    input,
+    textarea {
+        border-radius: 8px !important;
+    }
+    .stTextInput > div > div > input,
+    .stTextArea > div > div > textarea,
+    .stSelectbox > div > div > div,
+    .stNumberInput > div > div > input,
+    .stDateInput > div > div > input,
+    textarea,
+    input,
+    select {
+        background: var(--field-bg) !important;
+        color: var(--text) !important;
+        border: 1px solid var(--border) !important;
+        box-shadow: none !important;
+    }
+    .stTextInput > div > div > input::placeholder,
+    .stTextArea > div > div > textarea::placeholder {
+        color: #7d8aa1 !important;
     }
     .stButton > button {
         background: var(--primary);
@@ -75,6 +99,24 @@ CUSTOM_CSS = """
         border: 1px solid var(--border);
         border-radius: 10px;
         padding: 0.8rem 1rem;
+    }
+    [data-testid="stBaseButton-secondary"],
+    .stDownloadButton > button,
+    .stDownloadButton button {
+        background: #ffffff !important;
+        color: var(--primary) !important;
+        border: 1px solid var(--border) !important;
+    }
+    .stTabs [role="tablist"] button {
+        background: transparent;
+        color: var(--text);
+    }
+    .stTabs [role="tablist"] .st-bo {
+        border-color: var(--primary);
+    }
+    .stCodeBlock {
+        background: #f7faff !important;
+        border: 1px solid var(--border) !important;
     }
 </style>
 """
