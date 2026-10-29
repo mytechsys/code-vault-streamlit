@@ -107,6 +107,18 @@ def init_db():
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS stored_files (
+            id TEXT PRIMARY KEY,
+            filename TEXT NOT NULL,
+            content BLOB NOT NULL,
+            mime_type TEXT,
+            uploaded_by TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -263,6 +275,47 @@ def delete_script_by_id(script_id):
     conn.close()
 
 
+def save_uploaded_file(uploaded_file, uploaded_by):
+    file_id = str(uuid.uuid4())
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO stored_files (id, filename, content, mime_type, uploaded_by) VALUES (?, ?, ?, ?, ?)",
+        (file_id, uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type, uploaded_by),
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_stored_files(username=None):
+    conn = get_conn()
+    if username is None:
+        rows = conn.execute("SELECT id, filename, mime_type, uploaded_by, created_at FROM stored_files ORDER BY created_at DESC").fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, filename, mime_type, uploaded_by, created_at FROM stored_files WHERE uploaded_by = ? ORDER BY created_at DESC",
+            (username,),
+        ).fetchall()
+    conn.close()
+    return rows
+
+
+def get_stored_file(file_id):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT filename, content, mime_type FROM stored_files WHERE id = ?",
+        (file_id,),
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def delete_stored_file(file_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM stored_files WHERE id = ?", (file_id,))
+    conn.commit()
+    conn.close()
+
+
 def create_reset_token(username):
     token = str(uuid.uuid4())
     conn = get_conn()
@@ -346,6 +399,47 @@ def render_code_preview(content, script_type):
         st.code(content, language="html")
     else:
         st.code(content, language="text")
+
+
+def render_file_library(is_admin):
+    uploader_version = st.session_state.get("file_uploader_version", 0)
+    uploaded_files = st.file_uploader(
+        "Choose files",
+        accept_multiple_files=True,
+        key=f"stored_file_uploader_{uploader_version}",
+    )
+    if uploaded_files and st.button("Save uploaded files", type="primary"):
+        for uploaded_file in uploaded_files:
+            save_uploaded_file(uploaded_file, st.session_state.username)
+        st.session_state.file_uploader_version = uploader_version + 1
+        st.success(f"Saved {len(uploaded_files)} file(s).")
+        st.rerun()
+
+    files = list_stored_files(None if is_admin else st.session_state.username)
+    if not files:
+        st.info("No files stored yet.")
+        return
+
+    for stored_file in files:
+        download_column, delete_column = st.columns([5, 1]) if is_admin else (st.container(), None)
+        with download_column:
+            file_info = stored_file["filename"]
+            if is_admin:
+                file_info += f" • {stored_file['uploaded_by']}"
+            st.caption(file_info)
+            file_data = get_stored_file(stored_file["id"])
+            st.download_button(
+                "Download",
+                data=file_data["content"],
+                file_name=file_data["filename"],
+                mime=file_data["mime_type"] or "application/octet-stream",
+                key=f"download_stored_file_{stored_file['id']}",
+            )
+        if is_admin:
+            with delete_column:
+                if st.button("Delete", key=f"delete_stored_file_{stored_file['id']}"):
+                    delete_stored_file(stored_file["id"])
+                    st.rerun()
 
 
 init_db()
@@ -543,7 +637,7 @@ else:
             st.rerun()
         render_profile()
     elif st.session_state.role == "user":
-        user_tab1, user_tab2 = st.tabs(["Paste Code", "My Files"])
+        user_tab1, user_tab2, user_tab3 = st.tabs(["Paste Code", "My Scripts", "Files"])
 
         with user_tab1:
             col_a, col_b = st.columns([2, 1])
@@ -595,8 +689,11 @@ else:
                         render_code_preview(row["content"], row["script_type"])
                         st.caption(f"Created: {row['created_at']}")
 
+        with user_tab3:
+            render_file_library(is_admin=False)
+
     elif st.session_state.role == "admin":
-        admin_tab1, admin_tab2 = st.tabs(["Codes", "Export ZIP"])
+        admin_tab1, admin_tab2, admin_tab3 = st.tabs(["Codes", "Export ZIP", "Files"])
 
         with admin_tab1:
             rows = list_all_scripts()
@@ -716,6 +813,9 @@ else:
                     )
                 else:
                     st.info("Select at least one file to prepare a download.")
+
+        with admin_tab3:
+            render_file_library(is_admin=True)
 
 
 st.sidebar.title("Code Vault")
