@@ -23,9 +23,20 @@ COMPACT_LAYOUT_CSS = """
     [data-testid="stForm"] [data-testid="stVerticalBlock"] {
         gap: 0.65rem;
     }
+    .st-key-auth-switch [data-testid="stSegmentedControl"] {
+        margin-left: auto;
+    }
+    .st-key-auth-panel {
+        max-width: 430px;
+        width: 100%;
+        margin: 2rem auto 0;
+    }
     @media (max-width: 640px) {
         [data-testid="stAppViewContainer"] .block-container {
             padding: 1rem;
+        }
+        .st-key-auth-panel {
+            margin-top: 1rem;
         }
     }
 </style>
@@ -323,12 +334,12 @@ if "username" not in st.session_state:
 
 
 def login_screen():
-    st.title("Code Vault")
-    st.caption("Simple code storage for users and admins")
+    st.markdown("### Code Vault")
+    st.caption("Sign in to your account")
     with st.form("login_form"):
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Login")
+        submitted = st.form_submit_button("Login", use_container_width=True)
         if submitted:
             user = login_user(username, password)
             if user:
@@ -339,35 +350,34 @@ def login_screen():
             else:
                 st.error("Invalid username or password.")
 
-    st.markdown("<div class='info-card'><span class='small-note'>Default accounts: admin/admin and user/user</span></div>", unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.subheader("Forgot Password")
-    with st.form("forgot_password"):
-        fp_username = st.text_input("Username")
-        fp_email = st.text_input("Email")
-        reset_clicked = st.form_submit_button("Send Reset Email")
-        if reset_clicked:
-            conn = get_conn()
-            row = conn.execute(
-                "SELECT username, email FROM users WHERE username = ? AND email = ?",
-                (fp_username, fp_email),
-            ).fetchone()
-            conn.close()
-            if row:
-                token = create_reset_token(fp_username)
-                _, message = send_password_reset_email(fp_email, fp_username, token)
-                st.info(message)
-            else:
-                st.warning("No account matches that username and email.")
+    with st.expander("Forgot password"):
+        with st.form("forgot_password"):
+            fp_username = st.text_input("Username")
+            fp_email = st.text_input("Email")
+            reset_clicked = st.form_submit_button("Send Reset Email")
+            if reset_clicked:
+                conn = get_conn()
+                row = conn.execute(
+                    "SELECT username, email FROM users WHERE username = ? AND email = ?",
+                    (fp_username, fp_email),
+                ).fetchone()
+                conn.close()
+                if row:
+                    token = create_reset_token(fp_username)
+                    _, message = send_password_reset_email(fp_email, fp_username, token)
+                    st.info(message)
+                else:
+                    st.warning("No account matches that username and email.")
 
 
 def reset_password_screen():
-    st.title("Reset Password")
-    username = st.text_input("Username")
-    token = st.text_input("Reset Token")
-    new_password = st.text_input("New Password", type="password")
-    if st.button("Set New Password"):
+    st.markdown("### Reset password")
+    with st.form("reset_password_form"):
+        username = st.text_input("Username")
+        token = st.text_input("Reset token")
+        new_password = st.text_input("New password", type="password")
+        submitted = st.form_submit_button("Set new password", use_container_width=True)
+    if submitted:
         if not username or not token or not new_password:
             st.warning("Username, token, and new password are required.")
             return
@@ -383,11 +393,21 @@ def reset_password_screen():
 
 
 if not st.session_state.logged_in:
-    tab_login, tab_reset = st.tabs(["Login", "Reset Password"])
-    with tab_login:
-        login_screen()
-    with tab_reset:
-        reset_password_screen()
+    with st.container(key="auth-switch"):
+        auth_mode = st.segmented_control(
+            "Authentication",
+            ["Login", "Reset password"],
+            default="Login",
+            label_visibility="collapsed",
+            key="auth_mode",
+            width="content",
+        )
+
+    with st.container(key="auth-panel"):
+        if auth_mode == "Reset password":
+            reset_password_screen()
+        else:
+            login_screen()
 else:
     st.title(f"Welcome, {st.session_state.username}")
     st.caption(f"Role: {st.session_state.role}")
