@@ -20,6 +20,11 @@ from urllib.parse import quote
 import streamlit as st
 
 try:
+    qrcode = __import__("qrcode")
+except ImportError:
+    qrcode = None
+
+try:
     st_ace = import_module("streamlit_ace").st_ace
 except ImportError:
     st_ace = None
@@ -962,45 +967,29 @@ def change_password_screen():
             st.success("Password changed successfully.")
 
 
-def render_mfa_settings(username):
+@st.dialog("Set up authenticator app", width="large")
+def show_mfa_setup_dialog(username):
     account = get_user_auth_settings(username)
-    st.markdown("#### Multi-factor authentication")
-    if account["mfa_enabled"]:
-        st.success("Authenticator app MFA is enabled.")
-        with st.form("disable_mfa_form"):
-            current_password = st.text_input("Current password to disable MFA", type="password")
-            code = st.text_input("Authenticator code", max_chars=8)
-            submitted = st.form_submit_button("Turn off MFA")
-        if submitted:
-            user = login_user(username, current_password)
-            if not user:
-                st.error("Current password is incorrect.")
-            elif not verify_totp(account["mfa_secret"], code):
-                st.error("Enter a valid authenticator code.")
-            else:
-                set_user_mfa(username, None, False)
-                st.success("MFA is now turned off.")
-                st.rerun()
-        return
-
     secret = account["mfa_secret"]
     if not secret:
-        if st.button("Set up authenticator app"):
-            set_user_mfa(username, generate_totp_secret(), False)
-            st.rerun()
-        return
-
+        secret = generate_totp_secret()
+        set_user_mfa(username, secret, False)
     account_label = quote(f"Code Vault:{username}")
     issuer = quote("Code Vault")
     provisioning_uri = (
         f"otpauth://totp/{account_label}?secret={secret}&issuer={issuer}"
         "&algorithm=SHA1&digits=6&period=30"
     )
-    st.caption("Add this account to Google Authenticator or another TOTP app.")
-    st.code(provisioning_uri, language="text")
-    st.caption("If your authenticator asks for a manual key, enter this secret:")
-    st.code(secret, language="text")
-    if st.button("Generate a new setup secret", key="regenerate_mfa_secret"):
+    st.caption("Scan this QR code using Google Authenticator or another TOTP app.")
+    if qrcode:
+        st.image(qrcode.make(provisioning_uri), width=240)
+    else:
+        st.warning("QR display requires the qrcode project dependency. Use the optional setup details below.")
+    with st.expander("Can't scan? Show setup key"):
+        st.code(secret, language="text")
+        st.code(provisioning_uri, language="text")
+
+    if st.button("Generate a new setup key", key="regenerate_mfa_secret"):
         set_user_mfa(username, generate_totp_secret(), False)
         st.rerun()
 
@@ -1010,10 +999,41 @@ def render_mfa_settings(username):
     if submitted:
         if verify_totp(secret, code):
             set_user_mfa(username, secret, True)
+            st.session_state.mfa_setup_prompt = False
             st.success("MFA is enabled.")
             st.rerun()
         else:
             st.error("That code is not valid. Check the authenticator time and try again.")
+
+
+def render_mfa_settings(username):
+    account = get_user_auth_settings(username)
+    st.markdown("#### Multi-factor authentication")
+    if account["mfa_enabled"]:
+        st.success("Authenticator app MFA is enabled.")
+        with st.form("manage_mfa_form"):
+            action = st.selectbox("MFA settings", ["Turn off MFA", "Replace authenticator"])
+            current_password = st.text_input("Current password", type="password")
+            code = st.text_input("Current authenticator code", max_chars=8)
+            submitted = st.form_submit_button("Continue")
+        if submitted:
+            user = login_user(username, current_password)
+            if not user:
+                st.error("Current password is incorrect.")
+            elif not verify_totp(account["mfa_secret"], code):
+                st.error("Enter a valid authenticator code.")
+            elif action == "Turn off MFA":
+                set_user_mfa(username, None, False)
+                st.success("MFA is now turned off.")
+                st.rerun()
+            else:
+                set_user_mfa(username, generate_totp_secret(), False)
+                show_mfa_setup_dialog(username)
+        return
+
+    button_label = "Continue MFA setup" if account["mfa_secret"] else "Set up authenticator app"
+    if st.button(button_label, key="open_mfa_setup"):
+        show_mfa_setup_dialog(username)
 
 
 def render_profile():
@@ -1094,9 +1114,8 @@ else:
         setup_column, defer_column, _ = st.columns([1, 1, 4])
         with setup_column:
             if st.button("Set up MFA", key="open_mfa_setup"):
-                st.session_state.profile_view = True
                 st.session_state.mfa_setup_prompt = False
-                st.rerun()
+                show_mfa_setup_dialog(st.session_state.username)
         with defer_column:
             if st.button("Later", key="defer_mfa_setup"):
                 st.session_state.mfa_setup_prompt = False
