@@ -60,6 +60,13 @@ COMPACT_LAYOUT_CSS = """
         background: transparent !important;
         box-shadow: none !important;
     }
+    .st-key-selected-file-actions [data-testid="stHorizontalBlock"] {
+        justify-content: flex-end;
+        gap: 0.625rem;
+    }
+    .st-key-admin-bulk-tools [data-testid="stHorizontalBlock"] {
+        align-items: flex-end;
+    }
     @media (max-width: 640px) {
         [data-testid="stAppViewContainer"] .block-container {
             padding: 2rem 1rem 1rem;
@@ -486,31 +493,38 @@ def render_file_library(is_admin):
 
     if is_admin:
         export_files = list_stored_files()
-        if export_files:
-            st.download_button(
-                "Download all files as ZIP",
-                data=export_stored_files_zip(export_files),
-                file_name="all_stored_files.zip",
-                mime="application/zip",
-                key="download_all_stored_files",
-            )
-
-        uploaded_zip = st.file_uploader(
-            "Import files from ZIP",
-            type=["zip"],
-            key="stored_files_zip_uploader",
-        )
-        if uploaded_zip and st.button("Import ZIP", key="import_stored_files_zip"):
-            imported_count, error = import_stored_files_zip(
-                uploaded_zip,
-                st.session_state.username,
-            )
-            if error:
-                st.error(error)
-            else:
-                st.success(f"Imported {imported_count} file(s).")
-                st.session_state.file_grid_version = st.session_state.get("file_grid_version", 0) + 1
-                st.rerun()
+        st.subheader("Bulk file tools")
+        with st.container(key="admin-bulk-tools"):
+            import_column, export_column = st.columns([3, 1], vertical_alignment="bottom")
+            with import_column:
+                uploaded_zip = st.file_uploader(
+                    "Import files from ZIP",
+                    type=["zip"],
+                    key="stored_files_zip_uploader",
+                )
+                if uploaded_zip and st.button("Import ZIP", key="import_stored_files_zip"):
+                    imported_count, error = import_stored_files_zip(
+                        uploaded_zip,
+                        st.session_state.username,
+                    )
+                    if error:
+                        st.error(error)
+                    else:
+                        st.success(f"Imported {imported_count} file(s).")
+                        st.session_state.file_grid_version = st.session_state.get("file_grid_version", 0) + 1
+                        st.rerun()
+            with export_column:
+                if export_files:
+                    st.download_button(
+                        "Download all as ZIP",
+                        data=export_stored_files_zip(export_files),
+                        file_name="all_stored_files.zip",
+                        mime="application/zip",
+                        key="download_all_stored_files",
+                        use_container_width=True,
+                    )
+                else:
+                    st.caption("No files available to export.")
 
     files = list_stored_files(None if is_admin else st.session_state.username)
     if not files:
@@ -535,31 +549,32 @@ def render_file_library(is_admin):
         with filename_column:
             st.markdown(f"**{selected_file['filename']}**")
         with actions_column:
-            action_columns = st.columns(2 if is_admin else 1, gap="small")
-            file_data = get_stored_file(selected_file["id"])
-            with action_columns[0]:
-                st.download_button(
-                    " ",
-                    data=file_data["content"],
-                    file_name=file_data["filename"],
-                    mime=file_data["mime_type"] or "application/octet-stream",
-                    key=f"download_stored_file_{selected_file['id']}",
-                    icon=":material/download:",
-                    help=f"Download {file_data['filename']}",
-                    type="tertiary",
-                )
-            if is_admin:
-                with action_columns[1]:
-                    if st.button(
+            with st.container(key="selected-file-actions"):
+                action_columns = st.columns(2 if is_admin else 1, gap="medium")
+                file_data = get_stored_file(selected_file["id"])
+                with action_columns[0]:
+                    st.download_button(
                         " ",
-                        key=f"delete_stored_file_{selected_file['id']}",
-                        icon=":material/delete:",
-                        help=f"Delete {selected_file['filename']}",
+                        data=file_data["content"],
+                        file_name=file_data["filename"],
+                        mime=file_data["mime_type"] or "application/octet-stream",
+                        key=f"download_stored_file_{selected_file['id']}",
+                        icon=":material/download:",
+                        help=f"Download {file_data['filename']}",
                         type="tertiary",
-                    ):
-                        delete_stored_file(selected_file["id"])
-                        st.session_state.file_grid_version = grid_version + 1
-                        st.rerun()
+                    )
+                if is_admin:
+                    with action_columns[1]:
+                        if st.button(
+                            " ",
+                            key=f"delete_stored_file_{selected_file['id']}",
+                            icon=":material/delete:",
+                            help=f"Delete {selected_file['filename']}",
+                            type="tertiary",
+                        ):
+                            delete_stored_file(selected_file["id"])
+                            st.session_state.file_grid_version = grid_version + 1
+                            st.rerun()
     else:
         st.caption("Select a file row to show its actions.")
 
