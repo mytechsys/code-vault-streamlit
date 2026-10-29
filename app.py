@@ -50,21 +50,9 @@ COMPACT_LAYOUT_CSS = """
         width: 100%;
         margin: 2rem auto 0;
     }
-    .st-key-file-list-table [data-testid="stVerticalBlock"] {
-        gap: 0;
-    }
-    .st-key-file-list-table [data-testid="stHorizontalBlock"] {
-        padding: 0.15rem 0;
-        border-bottom: 1px solid var(--border-color, rgba(128, 128, 128, 0.2));
-    }
-    .st-key-file-list-table [data-testid="stMarkdownContainer"] p {
-        margin: 0;
-        font-size: 0.85rem;
-        line-height: 1.25rem;
-    }
-    .st-key-file-list-table [data-testid="stDownloadButton"] button,
-    .st-key-file-list-table [data-testid="stButton"] button {
-        min-height: 1.6rem !important;
+    .st-key-file-row-actions [data-testid="stDownloadButton"] button,
+    .st-key-file-row-actions [data-testid="stButton"] button {
+        min-height: 1.8rem !important;
         padding: 0 !important;
         border: 0 !important;
         background: transparent !important;
@@ -440,58 +428,63 @@ def render_file_library(is_admin):
         st.info("No files stored yet.")
         return
 
-    with st.container(key="file-list-table"):
-        filename_header, creator_header, date_header, actions_header = st.columns([5, 2, 2, 1.3])
-        with filename_header:
-            st.markdown("**Filename**")
-        with creator_header:
-            st.markdown("**Created by**")
-        with date_header:
-            st.markdown("**Date**")
-        with actions_header:
-            st.markdown("**Actions**")
+    grid_data = [
+        {
+            "Filename": stored_file["filename"],
+            "Created by": stored_file["uploaded_by"],
+            "Date": stored_file["created_at"],
+            "Actions": "↓  ×" if is_admin else "↓",
+        }
+        for stored_file in files
+    ]
+    grid = st.dataframe(
+        grid_data,
+        key=f"stored_file_grid_{'admin' if is_admin else 'user'}",
+        on_select="rerun",
+        selection_mode="single-row",
+        hide_index=True,
+        width="stretch",
+        height=min(180 + 35 * len(files), 520),
+        column_config={
+            "Filename": st.column_config.TextColumn("Filename", width="large"),
+            "Created by": st.column_config.TextColumn("Created by", width="medium"),
+            "Date": st.column_config.TextColumn("Date", width="medium"),
+            "Actions": st.column_config.TextColumn("Actions", width="small"),
+        },
+    )
 
-        for stored_file in files:
-            file_column, creator_column, date_column, actions_column = st.columns(
-                [5, 2, 2, 1.3],
-                gap="small",
-                vertical_alignment="center",
+    selected_rows = grid.selection.rows
+    if not selected_rows:
+        st.caption("Select a file to show its actions.")
+        return
+
+    stored_file = files[selected_rows[0]]
+    file_data = get_stored_file(stored_file["id"])
+    st.caption(f"Selected: {stored_file['filename']}")
+    with st.container(key="file-row-actions"):
+        action_columns = st.columns(2 if is_admin else 1, gap="small")
+        with action_columns[0]:
+            st.download_button(
+                " ",
+                data=file_data["content"],
+                file_name=file_data["filename"],
+                mime=file_data["mime_type"] or "application/octet-stream",
+                key=f"download_stored_file_{stored_file['id']}",
+                icon=":material/download:",
+                help=f"Download {file_data['filename']}",
+                type="tertiary",
             )
-            with file_column:
-                st.write(stored_file["filename"])
-            with creator_column:
-                st.write(stored_file["uploaded_by"])
-            with date_column:
-                st.write(stored_file["created_at"])
-
-            file_data = get_stored_file(stored_file["id"])
-            with actions_column:
-                if is_admin:
-                    download_column, delete_column = st.columns(2, gap="small")
-                else:
-                    download_column = st.container()
-                    delete_column = None
-
-                with download_column:
-                    st.download_button(
-                        " ",
-                        data=file_data["content"],
-                        file_name=file_data["filename"],
-                        mime=file_data["mime_type"] or "application/octet-stream",
-                        key=f"download_stored_file_{stored_file['id']}",
-                        icon=":material/download:",
-                        help=f"Download {file_data['filename']}",
-                    )
-                if is_admin:
-                    with delete_column:
-                        if st.button(
-                            " ",
-                            key=f"delete_stored_file_{stored_file['id']}",
-                            icon=":material/delete:",
-                            help=f"Delete {stored_file['filename']}",
-                        ):
-                            delete_stored_file(stored_file["id"])
-                            st.rerun()
+        if is_admin:
+            with action_columns[1]:
+                if st.button(
+                    " ",
+                    key=f"delete_stored_file_{stored_file['id']}",
+                    icon=":material/delete:",
+                    help=f"Delete {stored_file['filename']}",
+                    type="tertiary",
+                ):
+                    delete_stored_file(stored_file["id"])
+                    st.rerun()
 
 
 init_db()
