@@ -421,23 +421,44 @@ def render_file_library(is_admin):
         return
 
     for stored_file in files:
-        download_column, delete_column = st.columns([5, 1]) if is_admin else (st.container(), None)
-        with download_column:
-            file_info = stored_file["filename"]
+        if is_admin:
+            file_column, download_column, delete_column = st.columns(
+                [8, 1, 1],
+                gap="small",
+                vertical_alignment="center",
+            )
+        else:
+            file_column, download_column = st.columns(
+                [9, 1],
+                gap="small",
+                vertical_alignment="center",
+            )
+            delete_column = None
+
+        with file_column:
             if is_admin:
-                file_info += f" • {stored_file['uploaded_by']}"
-            st.caption(file_info)
-            file_data = get_stored_file(stored_file["id"])
+                st.write(f"{stored_file['filename']} · {stored_file['uploaded_by']}")
+            else:
+                st.write(stored_file["filename"])
+        file_data = get_stored_file(stored_file["id"])
+        with download_column:
             st.download_button(
-                "Download",
+                " ",
                 data=file_data["content"],
                 file_name=file_data["filename"],
                 mime=file_data["mime_type"] or "application/octet-stream",
                 key=f"download_stored_file_{stored_file['id']}",
+                icon=":material/download:",
+                help=f"Download {file_data['filename']}",
             )
         if is_admin:
             with delete_column:
-                if st.button("Delete", key=f"delete_stored_file_{stored_file['id']}"):
+                if st.button(
+                    " ",
+                    key=f"delete_stored_file_{stored_file['id']}",
+                    icon=":material/delete:",
+                    help=f"Delete {stored_file['filename']}",
+                ):
                     delete_stored_file(stored_file["id"])
                     st.rerun()
 
@@ -693,7 +714,9 @@ else:
             render_file_library(is_admin=False)
 
     elif st.session_state.role == "admin":
-        admin_tab1, admin_tab2, admin_tab3 = st.tabs(["Codes", "Export ZIP", "Files"])
+        admin_tab1, admin_tab2, admin_tab3, admin_tab4 = st.tabs(
+            ["Codes", "Add Script", "Export ZIP", "Files"]
+        )
 
         with admin_tab1:
             rows = list_all_scripts()
@@ -787,6 +810,60 @@ else:
                             st.rerun()
 
         with admin_tab2:
+            filename_column, type_column = st.columns([2, 1])
+            with filename_column:
+                new_filename = st.text_input(
+                    "Filename",
+                    placeholder="example.py",
+                    key="admin_new_filename",
+                )
+            with type_column:
+                new_script_type = st.selectbox(
+                    "Type",
+                    ["python", "javascript", "html", "css", "sql", "bash", "json", "c_cpp", "text"],
+                    key="admin_new_script_type",
+                )
+
+            if "admin_new_editor_version" not in st.session_state:
+                st.session_state.admin_new_editor_version = 0
+            if st_ace:
+                new_content = st_ace(
+                    value="",
+                    language=ACE_LANGUAGES[new_script_type],
+                    theme="tomorrow_night",
+                    key=f"admin_new_code_{st.session_state.admin_new_editor_version}",
+                    height=260,
+                    auto_update=True,
+                    keybinding="vscode",
+                    show_print_margin=False,
+                ) or ""
+            else:
+                new_content = st.text_area(
+                    "Code",
+                    height=260,
+                    key=f"admin_new_code_{st.session_state.admin_new_editor_version}",
+                )
+
+            if st.button("Save Script", type="primary", key="admin_save_new_script"):
+                if not new_filename.strip() or not new_content.strip():
+                    st.warning("Filename and code are required.")
+                else:
+                    chosen_type = (
+                        new_script_type
+                        if new_script_type != "text"
+                        else detect_script_type(new_content)
+                    )
+                    save_script(
+                        new_filename.strip(),
+                        new_content.strip(),
+                        chosen_type,
+                        st.session_state.username,
+                    )
+                    st.session_state.admin_new_editor_version += 1
+                    st.success(f"Saved: {new_filename.strip()} ({script_type_label(chosen_type)})")
+                    st.rerun()
+
+        with admin_tab3:
             rows = list_all_scripts()
             if not rows:
                 st.info("No scripts available for export.")
@@ -814,7 +891,7 @@ else:
                 else:
                     st.info("Select at least one file to prepare a download.")
 
-        with admin_tab3:
+        with admin_tab4:
             render_file_library(is_admin=True)
 
 
