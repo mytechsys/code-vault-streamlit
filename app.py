@@ -12,116 +12,26 @@ import streamlit as st
 
 DB_PATH = "app.db"
 
-CUSTOM_CSS = """
+st.set_page_config(page_title="Code Vault", page_icon="🧠", layout="wide")
+
+COMPACT_LAYOUT_CSS = """
 <style>
-    :root {
-        --bg: #ffffff;
-        --panel: #ffffff;
-        --panel-soft: #f4f9ff;
-        --primary: #1f6feb;
-        --primary-soft: #eaf3ff;
-        --border: #dfe8f5;
-        --text: #1b2430;
-        --muted: #55657a;
-        --field-bg: #ffffff;
+    [data-testid="stAppViewContainer"] .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 1.5rem;
     }
-    .stApp {
-        background: var(--bg);
-        color: var(--text);
+    [data-testid="stForm"] [data-testid="stVerticalBlock"] {
+        gap: 0.65rem;
     }
-    .block-container {
-        padding-top: 1.4rem;
-        padding-bottom: 1.4rem;
-        max-width: 1200px;
-    }
-    div[data-testid="stSidebar"] {
-        background: var(--panel-soft);
-        border-right: 1px solid var(--border);
-    }
-    .stTitle, .stHeader, .stSubheader {
-        letter-spacing: 0.1px;
-    }
-    h1 {
-        font-size: 1.8rem !important;
-        margin-bottom: 0.5rem !important;
-    }
-    h2 {
-        font-size: 1.3rem !important;
-        margin-bottom: 0.3rem !important;
-    }
-    h3 {
-        font-size: 1.05rem !important;
-    }
-    .stTextInput > div > div > input,
-    .stTextArea > div > div > textarea,
-    .stSelectbox > div > div,
-    .stNumberInput > div > div > input,
-    .stDateInput > div > div > input,
-    .stButton > button,
-    select,
-    input,
-    textarea {
-        border-radius: 8px !important;
-    }
-    .stTextInput > div > div > input,
-    .stTextArea > div > div > textarea,
-    .stSelectbox > div > div > div,
-    .stNumberInput > div > div > input,
-    .stDateInput > div > div > input,
-    textarea,
-    input,
-    select {
-        background: var(--field-bg) !important;
-        color: var(--text) !important;
-        border: 1px solid var(--border) !important;
-        box-shadow: none !important;
-    }
-    .stTextInput > div > div > input::placeholder,
-    .stTextArea > div > div > textarea::placeholder {
-        color: #7d8aa1 !important;
-    }
-    .stButton > button {
-        background: var(--primary);
-        color: white;
-        border: none;
-        padding: 0.45rem 0.9rem;
-        font-weight: 600;
-    }
-    .stButton > button:hover {
-        background: #1557c0;
-    }
-    .small-note {
-        color: var(--muted);
-        font-size: 0.8rem;
-    }
-    .info-card {
-        background: var(--primary-soft);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 0.8rem 1rem;
-    }
-    [data-testid="stBaseButton-secondary"],
-    .stDownloadButton > button,
-    .stDownloadButton button {
-        background: #ffffff !important;
-        color: var(--primary) !important;
-        border: 1px solid var(--border) !important;
-    }
-    .stTabs [role="tablist"] button {
-        background: transparent;
-        color: var(--text);
-    }
-    .stTabs [role="tablist"] .st-bo {
-        border-color: var(--primary);
-    }
-    .stCodeBlock {
-        background: #f7faff !important;
-        border: 1px solid var(--border) !important;
+    @media (max-width: 640px) {
+        [data-testid="stAppViewContainer"] .block-container {
+            padding: 1rem;
+        }
     }
 </style>
 """
 
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+st.markdown(COMPACT_LAYOUT_CSS, unsafe_allow_html=True)
 
 
 def get_conn():
@@ -402,7 +312,6 @@ def render_code_preview(content, script_type):
         st.code(content, language="text")
 
 
-st.set_page_config(page_title="Code Vault", page_icon="🧠", layout="wide")
 init_db()
 
 if "logged_in" not in st.session_state:
