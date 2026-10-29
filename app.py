@@ -97,10 +97,14 @@ def init_db():
             password TEXT NOT NULL,
             role TEXT NOT NULL CHECK(role IN ('user','admin')),
             email TEXT,
+            locked INTEGER NOT NULL DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
+    user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    if "locked" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS scripts (
@@ -163,13 +167,50 @@ def hash_password(password):
 def login_user(username, password):
     conn = get_conn()
     row = conn.execute(
-        "SELECT username, role, email FROM users WHERE username = ? AND password = ?",
+        "SELECT username, role, email FROM users WHERE username = ? AND password = ? AND locked = 0",
         (username, hash_password(password)),
     ).fetchone()
     conn.close()
     if row:
         return {"username": row["username"], "role": row["role"], "email": row["email"]}
     return None
+
+
+def is_user_locked(username):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT locked FROM users WHERE username = ?",
+        (username,),
+    ).fetchone()
+    conn.close()
+    return bool(row and row["locked"])
+
+
+def list_user_accounts(search_term=""):
+    conn = get_conn()
+    if search_term:
+        rows = conn.execute(
+            "SELECT username, role, locked FROM users WHERE username LIKE ? COLLATE NOCASE ORDER BY username",
+            (f"%{search_term}%",),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT username, role, locked FROM users ORDER BY username"
+        ).fetchall()
+    conn.close()
+    return rows
+
+
+def set_user_locked(username, locked):
+    conn = get_conn()
+    result = conn.execute(
+        "UPDATE users SET locked = ? WHERE username = ? AND role != 'admin'",
+        (int(locked), username),
+    )
+    conn.commit()
+    updated = result.rowcount > 0
+    conn.close()
+    return updated
 
 
 def update_user_profile(current_username, new_username=None, new_password=None, email=None):
@@ -477,6 +518,29 @@ def render_code_preview(content, script_type):
         st.code(content, language="text")
 
 
+def script_download_filename(filename, script_type):
+    extensions = {
+        "python": ".py",
+        "javascript": ".js",
+        "html": ".html",
+        "css": ".css",
+        "sql": ".sql",
+        "bash": ".sh",
+        "json": ".json",
+        "c_cpp": ".cpp",
+        "text": ".txt",
+    }
+    if not os.path.splitext(filename)[1]:
+        return f"{filename}{extensions.get(script_type, '.txt')}"
+    return filename
+
+
+@st.dialog("Script preview", width="large")
+def show_script_preview(filename, content, script_type):
+    st.caption(filename)
+    render_code_preview(content, script_type)
+
+
 def render_file_library(is_admin):
     uploader_version = st.session_state.get("file_uploader_version", 0)
     uploaded_files = st.file_uploader(
@@ -603,6 +667,61 @@ def render_bulk_file_tools():
                 st.caption("No files available to export.")
 
 
+def render_user_account_manager():
+    search_term = st.text_input("Search users", key="admin_user_search")
+    accounts = list_user_accounts(search_term.strip())
+    if not accounts:
+        st.info("No user accounts found.")
+        return
+
+    grid_version = st.session_state.get("admin_account_grid_version", 0)
+    grid = st.dataframe(
+        [
+            {
+                "Username": account["username"],
+                "Account status": (
+                    "Admin (protected)"
+                    if account["role"] == "admin"
+                    else "Locked" if account["locked"] else "Active"
+                ),
+            }
+            for account in accounts
+        ],
+        key=f"admin_account_grid_{grid_version}_{search_term.strip().casefold()}",
+        on_select="rerun",
+        selection_mode="single-row",
+        hide_index=True,
+        width="stretch",
+        height=min(150 + 35 * len(accounts), 420),
+        column_config={
+            "Username": st.column_config.TextColumn("Username", width="large"),
+            "Account status": st.column_config.TextColumn("Account status", width="medium"),
+        },
+    )
+
+    if not grid.selection.rows:
+        st.caption("Select a user account to manage its status.")
+        return
+
+    account = accounts[grid.selection.rows[0]]
+    if account["role"] == "admin":
+        st.caption(f"{account['username']} is an administrator account and cannot be locked.")
+        return
+
+    is_locked = bool(account["locked"])
+    action_column, _ = st.columns([1, 5])
+    with action_column:
+        if st.button(
+            "Unlock account" if is_locked else "Lock account",
+            icon=":material/lock_open:" if is_locked else ":material/lock:",
+            type="secondary",
+            key=f"toggle_user_lock_{account['username']}_{int(is_locked)}",
+        ):
+            set_user_locked(account["username"], not is_locked)
+            st.session_state.admin_account_grid_version = grid_version + 1
+            st.rerun()
+
+
 init_db()
 
 if "logged_in" not in st.session_state:
@@ -623,9 +742,10 @@ def clear_login_session():
 
 
 if st.session_state.logged_in:
+    username = st.session_state.get("username")
     now = time.time()
     last_activity_at = st.session_state.get("last_activity_at", now)
-    if now - last_activity_at >= SESSION_TIMEOUT_SECONDS:
+    if is_user_locked(username) or now - last_activity_at >= SESSION_TIMEOUT_SECONDS:
         clear_login_session()
     else:
         st.session_state.last_activity_at = now
@@ -636,7 +756,7 @@ def session_timeout_guard():
     if not st.session_state.get("logged_in", False):
         return
     last_activity_at = st.session_state.get("last_activity_at", time.time())
-    if time.time() - last_activity_at >= SESSION_TIMEOUT_SECONDS:
+    if is_user_locked(st.session_state.get("username")) or time.time() - last_activity_at >= SESSION_TIMEOUT_SECONDS:
         clear_login_session()
         st.rerun()
 
@@ -846,16 +966,37 @@ else:
                 st.info("No saved scripts.")
             else:
                 for row in rows:
-                    with st.expander(f"{row['filename']} • {script_type_label(row['script_type'])}"):
-                        render_code_preview(row["content"], row["script_type"])
+                    info_column, preview_column, download_column = st.columns([6, 1, 1])
+                    with info_column:
+                        st.write(f"{row['filename']} • {script_type_label(row['script_type'])}")
                         st.caption(f"Created: {row['created_at']}")
+                    with preview_column:
+                        if st.button(
+                            " ",
+                            key=f"preview_user_script_{row['id']}",
+                            icon=":material/visibility:",
+                            help=f"Preview {row['filename']}",
+                            type="tertiary",
+                        ):
+                            show_script_preview(row["filename"], row["content"], row["script_type"])
+                    with download_column:
+                        st.download_button(
+                            " ",
+                            data=row["content"].encode("utf-8"),
+                            file_name=script_download_filename(row["filename"], row["script_type"]),
+                            mime="text/plain",
+                            key=f"download_user_script_{row['id']}",
+                            icon=":material/download:",
+                            help=f"Download {row['filename']}",
+                            type="tertiary",
+                        )
 
         with user_tab3:
             render_file_library(is_admin=False)
 
     elif st.session_state.role == "admin":
-        admin_tab1, admin_tab2, admin_tab3, admin_tab4, admin_tab5 = st.tabs(
-            ["Codes", "Add Script", "Export ZIP", "Files", "Bulk Files"]
+        admin_tab1, admin_tab2, admin_tab3, admin_tab4, admin_tab5, admin_tab6 = st.tabs(
+            ["Codes", "Add Script", "Export ZIP", "Files", "Bulk Files", "Accounts"]
         )
 
         with admin_tab1:
@@ -865,8 +1006,8 @@ else:
             else:
                 scripts_by_id = {row["id"]: row for row in rows}
                 script_ids = list(scripts_by_id)
-                select_column, action_edit, action_cancel, action_delete = st.columns(
-                    [5, 1, 1, 1],
+                select_column, action_preview, action_download, action_edit, action_cancel, action_delete = st.columns(
+                    [4, 1, 1, 1, 1, 1],
                     vertical_alignment="bottom",
                 )
                 with select_column:
@@ -883,6 +1024,26 @@ else:
                     st.session_state.admin_selected_script_id = selected_id
                     st.session_state.admin_edit_mode = False
 
+                with action_preview:
+                    if st.button(
+                        " ",
+                        key=f"preview_admin_script_{selected_id}",
+                        icon=":material/visibility:",
+                        help=f"Preview {script['filename']}",
+                        type="tertiary",
+                    ):
+                        show_script_preview(script["filename"], script["content"], script["script_type"])
+                with action_download:
+                    st.download_button(
+                        " ",
+                        data=script["content"].encode("utf-8"),
+                        file_name=script_download_filename(script["filename"], script["script_type"]),
+                        mime="text/plain",
+                        key=f"download_admin_script_{selected_id}",
+                        icon=":material/download:",
+                        help=f"Download {script['filename']}",
+                        type="tertiary",
+                    )
                 is_editing = st.session_state.get("admin_edit_mode", False)
                 with action_edit:
                     if not is_editing and st.button("Edit Code", key="edit_selected_code"):
@@ -1036,6 +1197,9 @@ else:
 
         with admin_tab5:
             render_bulk_file_tools()
+
+        with admin_tab6:
+            render_user_account_manager()
 
 
 st.sidebar.title("Code Vault")
