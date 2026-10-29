@@ -420,47 +420,59 @@ def render_file_library(is_admin):
         st.info("No files stored yet.")
         return
 
-    for stored_file in files:
-        if is_admin:
-            file_column, download_column, delete_column = st.columns(
-                [8, 1, 1],
-                gap="small",
-                vertical_alignment="center",
-            )
-        else:
-            file_column, download_column = st.columns(
-                [9, 1],
-                gap="small",
-                vertical_alignment="center",
-            )
-            delete_column = None
+    filename_header, creator_header, date_header, actions_header = st.columns([5, 2, 2, 2])
+    with filename_header:
+        st.markdown("**Filename**")
+    with creator_header:
+        st.markdown("**Created by**")
+    with date_header:
+        st.markdown("**Date**")
+    with actions_header:
+        st.markdown("**Actions**")
+    st.divider()
 
+    for stored_file in files:
+        file_column, creator_column, date_column, actions_column = st.columns(
+            [5, 2, 2, 2],
+            gap="small",
+            vertical_alignment="center",
+        )
         with file_column:
-            if is_admin:
-                st.write(f"{stored_file['filename']} · {stored_file['uploaded_by']}")
-            else:
-                st.write(stored_file["filename"])
+            st.write(stored_file["filename"])
+        with creator_column:
+            st.write(stored_file["uploaded_by"])
+        with date_column:
+            st.write(stored_file["created_at"])
+
         file_data = get_stored_file(stored_file["id"])
-        with download_column:
-            st.download_button(
-                " ",
-                data=file_data["content"],
-                file_name=file_data["filename"],
-                mime=file_data["mime_type"] or "application/octet-stream",
-                key=f"download_stored_file_{stored_file['id']}",
-                icon=":material/download:",
-                help=f"Download {file_data['filename']}",
-            )
-        if is_admin:
-            with delete_column:
-                if st.button(
+        with actions_column:
+            if is_admin:
+                download_column, delete_column = st.columns(2, gap="small")
+            else:
+                download_column = st.container()
+                delete_column = None
+
+            with download_column:
+                st.download_button(
                     " ",
-                    key=f"delete_stored_file_{stored_file['id']}",
-                    icon=":material/delete:",
-                    help=f"Delete {stored_file['filename']}",
-                ):
-                    delete_stored_file(stored_file["id"])
-                    st.rerun()
+                    data=file_data["content"],
+                    file_name=file_data["filename"],
+                    mime=file_data["mime_type"] or "application/octet-stream",
+                    key=f"download_stored_file_{stored_file['id']}",
+                    icon=":material/download:",
+                    help=f"Download {file_data['filename']}",
+                )
+            if is_admin:
+                with delete_column:
+                    if st.button(
+                        " ",
+                        key=f"delete_stored_file_{stored_file['id']}",
+                        icon=":material/delete:",
+                        help=f"Delete {stored_file['filename']}",
+                    ):
+                        delete_stored_file(stored_file["id"])
+                        st.rerun()
+        st.divider()
 
 
 init_db()
