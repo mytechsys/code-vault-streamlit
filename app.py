@@ -308,6 +308,8 @@ if "role" not in st.session_state:
 if "username" not in st.session_state:
     st.session_state.username = None
 
+raw_code = ""
+
 
 def login_screen():
     st.title("Code Vault Login")
@@ -477,23 +479,22 @@ else:
                             index=["python", "javascript", "html", "css", "sql", "bash", "json", "c_cpp", "text"].index(script["script_type"]) if script["script_type"] in ["python", "javascript", "html", "css", "sql", "bash", "json", "c_cpp", "text"] else 8,
                         )
                         content = st.text_area("Code", value=script["content"], height=400)
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            if st.form_submit_button("Update Code"):
-                                update_script_by_id(selected_id, filename, content, script_type)
-                                st.success("Script updated successfully.")
-                                st.rerun()
-                        with col2:
-                            if st.button("Delete Script"):
-                                delete_script_by_id(selected_id)
-                                st.warning("Script deleted.")
-                                st.rerun()
+                        submitted = st.form_submit_button("Update Code")
+                        if submitted:
+                            update_script_by_id(selected_id, filename, content, script_type)
+                            st.success("Script updated successfully.")
+                            st.rerun()
 
                     st.markdown("---")
                     st.subheader("Preview")
                     preview_type = detect_script_type(content)
                     st.markdown(f"Detected Type: **{script_type_label(preview_type)}**")
                     render_code_preview(content, preview_type)
+
+                    if st.button("Delete Script"):
+                        delete_script_by_id(selected_id)
+                        st.warning("Script deleted.")
+                        st.rerun()
 
         with admin_tab2:
             st.subheader("Export All Scripts as ZIP")
