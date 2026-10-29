@@ -982,7 +982,10 @@ def show_mfa_setup_dialog(username):
     )
     st.caption("Scan this QR code using Google Authenticator or another TOTP app.")
     if qrcode:
-        st.image(qrcode.make(provisioning_uri), width=240)
+        qr_image = qrcode.make(provisioning_uri)
+        qr_buffer = io.BytesIO()
+        qr_image.save(qr_buffer, format="PNG")
+        st.image(qr_buffer.getvalue(), width="content", output_format="PNG")
     else:
         st.warning("QR display requires the qrcode project dependency. Use the optional setup details below.")
     with st.expander("Can't scan? Show setup key"):
