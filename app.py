@@ -491,41 +491,6 @@ def render_file_library(is_admin):
         st.success(f"Saved {len(uploaded_files)} file(s).")
         st.rerun()
 
-    if is_admin:
-        export_files = list_stored_files()
-        st.subheader("Bulk file tools")
-        with st.container(key="admin-bulk-tools"):
-            import_column, export_column = st.columns([3, 1], vertical_alignment="bottom")
-            with import_column:
-                uploaded_zip = st.file_uploader(
-                    "Import files from ZIP",
-                    type=["zip"],
-                    key="stored_files_zip_uploader",
-                )
-                if uploaded_zip and st.button("Import ZIP", key="import_stored_files_zip"):
-                    imported_count, error = import_stored_files_zip(
-                        uploaded_zip,
-                        st.session_state.username,
-                    )
-                    if error:
-                        st.error(error)
-                    else:
-                        st.success(f"Imported {imported_count} file(s).")
-                        st.session_state.file_grid_version = st.session_state.get("file_grid_version", 0) + 1
-                        st.rerun()
-            with export_column:
-                if export_files:
-                    st.download_button(
-                        "Download all as ZIP",
-                        data=export_stored_files_zip(export_files),
-                        file_name="all_stored_files.zip",
-                        mime="application/zip",
-                        key="download_all_stored_files",
-                        use_container_width=True,
-                    )
-                else:
-                    st.caption("No files available to export.")
-
     files = list_stored_files(None if is_admin else st.session_state.username)
     if not files:
         st.info("No files stored yet.")
@@ -600,6 +565,42 @@ def render_file_library(is_admin):
             "Date": st.column_config.TextColumn("Date", width="medium"),
         },
     )
+
+
+def render_bulk_file_tools():
+    st.subheader("Bulk file tools")
+    export_files = list_stored_files()
+    with st.container(key="admin-bulk-tools"):
+        import_column, export_column = st.columns([3, 1], vertical_alignment="bottom")
+        with import_column:
+            uploaded_zip = st.file_uploader(
+                "Import files from ZIP",
+                type=["zip"],
+                key="stored_files_zip_uploader",
+            )
+            if uploaded_zip and st.button("Import ZIP", key="import_stored_files_zip"):
+                imported_count, error = import_stored_files_zip(
+                    uploaded_zip,
+                    st.session_state.username,
+                )
+                if error:
+                    st.error(error)
+                else:
+                    st.success(f"Imported {imported_count} file(s).")
+                    st.session_state.file_grid_version = st.session_state.get("file_grid_version", 0) + 1
+                    st.rerun()
+        with export_column:
+            if export_files:
+                st.download_button(
+                    "Download all as ZIP",
+                    data=export_stored_files_zip(export_files),
+                    file_name="all_stored_files.zip",
+                    mime="application/zip",
+                    key="download_all_stored_files",
+                    use_container_width=True,
+                )
+            else:
+                st.caption("No files available to export.")
 
 
 init_db()
@@ -853,8 +854,8 @@ else:
             render_file_library(is_admin=False)
 
     elif st.session_state.role == "admin":
-        admin_tab1, admin_tab2, admin_tab3, admin_tab4 = st.tabs(
-            ["Codes", "Add Script", "Export ZIP", "Files"]
+        admin_tab1, admin_tab2, admin_tab3, admin_tab4, admin_tab5 = st.tabs(
+            ["Codes", "Add Script", "Export ZIP", "Files", "Bulk Files"]
         )
 
         with admin_tab1:
@@ -1032,6 +1033,9 @@ else:
 
         with admin_tab4:
             render_file_library(is_admin=True)
+
+        with admin_tab5:
+            render_bulk_file_tools()
 
 
 st.sidebar.title("Code Vault")
