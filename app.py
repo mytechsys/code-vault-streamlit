@@ -4,6 +4,7 @@ import os
 import re
 import smtplib
 import sqlite3
+import time
 import uuid
 import zipfile
 from datetime import datetime
@@ -17,6 +18,7 @@ except ImportError:
     st_ace = None
 
 DB_PATH = "app.db"
+SESSION_TIMEOUT_SECONDS = 15 * 60
 ACE_LANGUAGES = {
     "python": "python",
     "javascript": "javascript",
@@ -34,14 +36,14 @@ st.set_page_config(page_title="Code Vault", page_icon="🧠", layout="wide")
 COMPACT_LAYOUT_CSS = """
 <style>
     [data-testid="stAppViewContainer"] .block-container {
-        padding-top: 1.5rem;
+        padding-top: 3.5rem;
         padding-bottom: 1.5rem;
     }
     [data-testid="stForm"] [data-testid="stVerticalBlock"] {
         gap: 0.65rem;
     }
     .st-key-auth-switch [data-testid="stSegmentedControl"] {
-        margin-left: auto;
+        margin: 0 auto;
     }
     .st-key-auth-panel {
         max-width: 430px;
@@ -50,7 +52,7 @@ COMPACT_LAYOUT_CSS = """
     }
     @media (max-width: 640px) {
         [data-testid="stAppViewContainer"] .block-container {
-            padding: 1rem;
+            padding: 2rem 1rem 1rem;
         }
         .st-key-auth-panel {
             margin-top: 1rem;
@@ -356,6 +358,34 @@ if "username" not in st.session_state:
     st.session_state.username = None
 
 
+def clear_login_session():
+    st.session_state.logged_in = False
+    st.session_state.role = None
+    st.session_state.username = None
+    st.session_state.profile_view = False
+    st.session_state.profile_loaded = False
+    st.session_state.pop("last_activity_at", None)
+
+
+if st.session_state.logged_in:
+    now = time.time()
+    last_activity_at = st.session_state.get("last_activity_at", now)
+    if now - last_activity_at >= SESSION_TIMEOUT_SECONDS:
+        clear_login_session()
+    else:
+        st.session_state.last_activity_at = now
+
+
+@st.fragment(run_every="30s")
+def session_timeout_guard():
+    if not st.session_state.get("logged_in", False):
+        return
+    last_activity_at = st.session_state.get("last_activity_at", time.time())
+    if time.time() - last_activity_at >= SESSION_TIMEOUT_SECONDS:
+        clear_login_session()
+        st.rerun()
+
+
 def login_screen():
     st.markdown("### Code Vault")
     st.caption("Sign in to your account")
@@ -369,28 +399,31 @@ def login_screen():
                 st.session_state.logged_in = True
                 st.session_state.role = user["role"]
                 st.session_state.username = user["username"]
+                st.session_state.last_activity_at = time.time()
                 st.rerun()
             else:
                 st.error("Invalid username or password.")
 
-    with st.expander("Forgot password"):
-        with st.form("forgot_password"):
-            fp_username = st.text_input("Username")
-            fp_email = st.text_input("Email")
-            reset_clicked = st.form_submit_button("Send Reset Email")
-            if reset_clicked:
-                conn = get_conn()
-                row = conn.execute(
-                    "SELECT username, email FROM users WHERE username = ? AND email = ?",
-                    (fp_username, fp_email),
-                ).fetchone()
-                conn.close()
-                if row:
-                    token = create_reset_token(fp_username)
-                    _, message = send_password_reset_email(fp_email, fp_username, token)
-                    st.info(message)
-                else:
-                    st.warning("No account matches that username and email.")
+
+def forgot_password_screen():
+    st.markdown("### Forgot password")
+    with st.form("forgot_password"):
+        fp_username = st.text_input("Username")
+        fp_email = st.text_input("Email")
+        reset_clicked = st.form_submit_button("Send Reset Email", use_container_width=True)
+    if reset_clicked:
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT username, email FROM users WHERE username = ? AND email = ?",
+            (fp_username, fp_email),
+        ).fetchone()
+        conn.close()
+        if row:
+            token = create_reset_token(fp_username)
+            _, message = send_password_reset_email(fp_email, fp_username, token)
+            st.info(message)
+        else:
+            st.warning("No account matches that username and email.")
 
 
 def reset_password_screen():
@@ -413,6 +446,32 @@ def reset_password_screen():
             st.success("Password reset successfully.")
         else:
             st.error("Invalid reset token.")
+
+
+def change_password_screen():
+    st.markdown("### Change password")
+    with st.form("change_password_form"):
+        username = st.text_input("Username")
+        current_password = st.text_input("Current password", type="password")
+        new_password = st.text_input("New password", type="password")
+        confirm_password = st.text_input("Confirm new password", type="password")
+        submitted = st.form_submit_button("Change password", use_container_width=True)
+    if submitted:
+        if not username or not current_password or not new_password:
+            st.warning("Complete all password fields.")
+        elif new_password != confirm_password:
+            st.warning("The new passwords do not match.")
+        elif not login_user(username, current_password):
+            st.error("Username or current password is incorrect.")
+        else:
+            conn = get_conn()
+            conn.execute(
+                "UPDATE users SET password = ? WHERE username = ?",
+                (hash_password(new_password), username),
+            )
+            conn.commit()
+            conn.close()
+            st.success("Password changed successfully.")
 
 
 def render_profile():
@@ -448,7 +507,7 @@ if not st.session_state.logged_in:
     with st.container(key="auth-switch"):
         auth_mode = st.segmented_control(
             "Authentication",
-            ["Login", "Reset password"],
+            ["Login", "Forgot", "Reset", "Change password"],
             default="Login",
             label_visibility="collapsed",
             key="auth_mode",
@@ -456,11 +515,16 @@ if not st.session_state.logged_in:
         )
 
     with st.container(key="auth-panel"):
-        if auth_mode == "Reset password":
+        if auth_mode == "Forgot":
+            forgot_password_screen()
+        elif auth_mode == "Reset":
             reset_password_screen()
+        elif auth_mode == "Change password":
+            change_password_screen()
         else:
             login_screen()
 else:
+    session_timeout_guard()
     _, account_column = st.columns([10, 1])
     with account_column:
         with st.popover("Account", icon=":material/account_circle:", help="Profile and logout", use_container_width=True):
@@ -469,11 +533,7 @@ else:
                 st.session_state.profile_view = True
                 st.rerun()
             if st.button("Logout", use_container_width=True):
-                st.session_state.logged_in = False
-                st.session_state.role = None
-                st.session_state.username = None
-                st.session_state.profile_view = False
-                st.session_state.profile_loaded = False
+                clear_login_session()
                 st.rerun()
 
     if st.session_state.get("profile_view", False):
@@ -539,59 +599,76 @@ else:
         admin_tab1, admin_tab2 = st.tabs(["Codes", "Export ZIP"])
 
         with admin_tab1:
-            search_term = st.text_input("Search by filename or type", placeholder="python, app.py")
             rows = list_all_scripts()
-            if search_term:
-                rows = [row for row in rows if search_term.lower() in (row["filename"] + " " + row["script_type"]).lower()]
-
             if not rows:
                 st.info("No scripts found.")
             else:
                 scripts_by_id = {row["id"]: row for row in rows}
                 script_ids = list(scripts_by_id)
-                selected_id = st.selectbox(
-                    "Select script",
-                    script_ids,
-                    format_func=lambda script_id: (
-                        f"{scripts_by_id[script_id]['filename']} • "
-                        f"{script_type_label(scripts_by_id[script_id]['script_type'])}"
-                    ),
+                select_column, action_edit, action_cancel, action_delete = st.columns(
+                    [5, 1, 1, 1],
+                    vertical_alignment="bottom",
                 )
+                with select_column:
+                    selected_id = st.selectbox(
+                        "Select script",
+                        script_ids,
+                        format_func=lambda script_id: (
+                            f"{scripts_by_id[script_id]['filename']} • "
+                            f"{script_type_label(scripts_by_id[script_id]['script_type'])}"
+                        ),
+                    )
                 script = scripts_by_id[selected_id]
                 if st.session_state.get("admin_selected_script_id") != selected_id:
                     st.session_state.admin_selected_script_id = selected_id
                     st.session_state.admin_edit_mode = False
 
-                if not st.session_state.get("admin_edit_mode", False):
-                    render_code_preview(script["content"], script["script_type"])
-                    if st.button("Edit Code", key="edit_selected_code"):
+                is_editing = st.session_state.get("admin_edit_mode", False)
+                with action_edit:
+                    if not is_editing and st.button("Edit Code", key="edit_selected_code"):
                         st.session_state.admin_edit_mode = True
                         st.rerun()
+                with action_cancel:
+                    if is_editing and st.button("Cancel", key="cancel_code_edit"):
+                        st.session_state.admin_edit_mode = False
+                        st.session_state.admin_editor_version = st.session_state.get("admin_editor_version", 0) + 1
+                        st.rerun()
+                with action_delete:
+                    if st.button("Delete Script", key="delete_selected_code"):
+                        delete_script_by_id(selected_id)
+                        st.session_state.admin_edit_mode = False
+                        st.rerun()
+
+                if not st.session_state.get("admin_edit_mode", False):
+                    render_code_preview(script["content"], script["script_type"])
                 else:
                     editor_version = st.session_state.get("admin_editor_version", 0)
-                    filename = st.text_input(
-                        "Filename",
-                        value=script["filename"],
-                        key=f"admin_filename_{selected_id}",
-                    )
                     script_types = [
                         "python", "javascript", "html", "css", "sql",
                         "bash", "json", "c_cpp", "text",
                     ]
                     current_type = script["script_type"] if script["script_type"] in script_types else "text"
-                    script_type = st.selectbox(
-                        "Type",
-                        script_types,
-                        index=script_types.index(current_type),
-                        key=f"admin_type_{selected_id}",
-                    )
+                    filename_column, type_column = st.columns([2, 1])
+                    with filename_column:
+                        filename = st.text_input(
+                            "Filename",
+                            value=script["filename"],
+                            key=f"admin_filename_{selected_id}",
+                        )
+                    with type_column:
+                        script_type = st.selectbox(
+                            "Type",
+                            script_types,
+                            index=script_types.index(current_type),
+                            key=f"admin_type_{selected_id}",
+                        )
                     if st_ace:
                         content = st_ace(
                             value=script["content"],
                             language=ACE_LANGUAGES[script_type],
                             theme="tomorrow_night",
                             key=f"admin_code_{selected_id}_{editor_version}",
-                            height=320,
+                            height=260,
                             auto_update=True,
                             keybinding="vscode",
                             show_print_margin=False,
@@ -600,7 +677,7 @@ else:
                         content = st.text_area(
                             "Code",
                             value=script["content"],
-                            height=320,
+                            height=260,
                             key=f"admin_code_{selected_id}_{editor_version}",
                         )
 
@@ -611,17 +688,6 @@ else:
                             st.session_state.admin_edit_mode = False
                             st.session_state.admin_editor_version = editor_version + 1
                             st.rerun()
-                    with cancel_column:
-                        if st.button("Cancel", key="cancel_code_edit"):
-                            st.session_state.admin_edit_mode = False
-                            st.session_state.admin_editor_version = editor_version + 1
-                            st.rerun()
-
-                if st.button("Delete Script", key="delete_selected_code"):
-                    delete_script_by_id(selected_id)
-                    st.session_state.admin_edit_mode = False
-                    st.warning("Script deleted.")
-                    st.rerun()
 
         with admin_tab2:
             rows = list_all_scripts()
